@@ -220,15 +220,6 @@ fn BasicRegistryMetaUtil(comptime S: type) type {
         /// access the index in the `std.MultiArrayList`.
         const EntityDataStruct: type = EntityDataStruct: {
             var fields: [(meta.fields(S).len * 2) + 1]TypeInfo.StructField = undefined;
-            // fields = ([_]TypeInfo.StructField{
-            //     .{
-            //         .name = "",
-            //         .field_type = @TypeOf(null),
-            //         .default_value = @as(?@TypeOf(null), null),
-            //         .is_comptime = true,
-            //         .alignment = 0,
-            //     },
-            // } ** fields.len);
             for (meta.fields(S)) |field_info, i| {
                 fields[i] = TypeInfo.StructField{
                     .name = (value_field_prefix ++ field_info.name),
