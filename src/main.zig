@@ -229,6 +229,28 @@ pub fn BasicRegistry(comptime S: type) type {
             try writer.writeAll(indentation[1..] ++ "}");
         }
 
+        pub const IterationType = enum { require_one, require_all };
+        pub fn iterateLinearConst(
+            self: *const Self,
+            comptime E: ?type,
+            comptime iteration_type: IterationType,
+            comptime components: ComponentFlags,
+            context: anytype,
+            comptime function: fn (*const Self, Entity, @TypeOf(context)) (if (E) |Err| (Err!bool) else bool),
+        ) (if (E) |Err| (Err!void) else void) {
+            var entity = @intToEnum(Entity, self._graveyard);
+            const sentinel_entity = @intToEnum(Entity, self._store.len);
+            outer: while (entity != sentinel_entity) : (entity = @intToEnum(Entity, @enumToInt(entity) + 1)) {
+                switch (iteration_type) {
+                    .require_one => if (!self.hasAny(entity, components)) continue :outer,
+                    .require_all => if (!self.hasAll(entity, components)) continue :outer,
+                }
+
+                const should_continue: bool = if (E != null) try function(self, entity, context) else function(self, entity, context);
+                if (!should_continue) return;
+            }
+        }
+
         /// Swaps the indexes, and subsequently the values
         /// in each component row referred to by each index,
         /// of the given entities. This has no outwardly visible effect,
@@ -413,13 +435,16 @@ test "BasicRegistry" {
     try testing.expectEqual(reg.get(ent1, .velocity).?.x, 122.0);
     try testing.expectEqual(reg.get(ent1, .velocity).?.y, 10.4);
 
-    const stdout = std.io.getStdOut().writer();
-
-    try stdout.writeByte('\n');
-
-    try reg.writeEntity(ent0, stdout, .{ .null_components = false, .prefix = .entity_id, .newline_indentation = .{ .tabs = 0 } });
-    try stdout.writeByte('\n');
-
-    try reg.writeEntity(ent1, stdout, .{ .null_components = false, .prefix = .entity_id, .newline_indentation = .{ .tabs = 0 } });
-    try stdout.writeByte('\n');
+    try std.io.getStdOut().writer().writeByte('\n');
+    try reg.iterateLinearConst(
+        std.fs.File.Writer.Error,
+        .require_one,
+        .{ .position = true, .velocity = true },
+        std.io.getStdOut().writer(),
+        struct { fn iterateFn(r: *const Reg, e: Reg.Entity, stdout: std.fs.File.Writer) std.fs.File.Writer.Error!bool {
+            try r.writeEntity(e, stdout, .{ .null_components = false, .prefix = .entity_id, .newline_indentation = .{ .tabs = 0 } });
+            try stdout.writeByte('\n');
+            return true;
+        } }.iterateFn
+    );
 }
