@@ -231,12 +231,12 @@ pub fn BasicRegistry(comptime S: type) type {
 
         pub const IterationType = enum { require_one, require_all };
         pub fn iterateLinearConst(
-            self: *const Self,
+            self: Self,
             comptime E: ?type,
             comptime iteration_type: IterationType,
             comptime components: ComponentFlags,
             context: anytype,
-            comptime function: fn (*const Self, Entity, @TypeOf(context)) (if (E) |Err| (Err!bool) else bool),
+            comptime function: fn (Self, Entity, @TypeOf(context)) (if (E) |Err| (Err!bool) else bool),
         ) (if (E) |Err| (Err!void) else void) {
             var entity = @intToEnum(Entity, self._graveyard);
             const sentinel_entity = @intToEnum(Entity, self._store.len);
@@ -441,7 +441,7 @@ test "BasicRegistry" {
         .require_one,
         .{ .position = true, .velocity = true },
         std.io.getStdOut().writer(),
-        struct { fn iterateFn(r: *const Reg, e: Reg.Entity, stdout: std.fs.File.Writer) std.fs.File.Writer.Error!bool {
+        struct { fn iterateFn(r: Reg, e: Reg.Entity, stdout: std.fs.File.Writer) std.fs.File.Writer.Error!bool {
             try r.writeEntity(e, stdout, .{ .null_components = false, .prefix = .entity_id, .newline_indentation = .{ .tabs = 0 } });
             try stdout.writeByte('\n');
             return true;
