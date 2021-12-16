@@ -125,6 +125,32 @@ pub fn BasicRegistry(comptime S: type) type {
             return self.getSliceOfComponentFlags(component)[index];
         }
 
+        pub const ComponentFlags = meta_info.ComponentFlags;
+
+        pub fn hasAny(self: Self, entity: Entity, comptime components: ComponentFlags) bool {
+            assert(self.entityIsAlive(entity));
+            const index = self.getEntityComponentsIndex(entity);
+            inline for (comptime enums.values(ComponentName)) |name| {
+                if (@field(components, @tagName(name))) {
+                    const flags = self.getSliceOfComponentFlags(name);
+                    if (flags[index]) return true;
+                }
+            }
+            return false;
+        }
+
+        pub fn hasAll(self: Self, entity: Entity, comptime components: ComponentFlags) bool {
+            assert(self.entityIsAlive(entity));
+            const index = self.getEntityComponentsIndex(entity);
+            inline for (comptime enums.values(ComponentName)) |name| {
+                const flags = self.getSliceOfComponentFlags(name);
+                if (@field(components, @tagName(name))) {
+                    if (!flags[index]) return false;
+                }
+            }
+            return true;
+        }
+
         pub fn assign(self: *Self, entity: Entity, comptime component: ComponentName) *ComponentType(component) {
             assert(self.entityIsAlive(entity));
             const index = self.getEntityComponentsIndex(entity);
@@ -149,7 +175,62 @@ pub fn BasicRegistry(comptime S: type) type {
             return val;
         }
 
-        /// Swaps the indexes, and subsequently the values in each component row,
+        pub const WriteEntityOptions = struct {
+            prefix: ?Prefix = .period,
+            null_components: bool = false,
+            /// if non-null, newlines are inserted between each field,
+            /// and before and after the first and last fields, respectively.
+            newline_indentation: ?NewlineIndentation = null,
+            /// Used for indentation
+            eol: Eol = .lf,
+            pub const Prefix = enum { entity_id, period };
+            pub const NewlineIndentation = union(enum) { tabs: u4, spaces: u4 };
+            pub const Eol = enum { lf, crlf };
+        };
+        pub fn writeEntity(
+            self: Self,
+            entity: Entity,
+            writer: anytype,
+            comptime options: WriteEntityOptions,
+        ) @TypeOf(writer).Error!void {
+            const component_names = comptime enums.values(ComponentName);
+            const eol: []const u8 = comptime switch (options.eol) { .lf => "\n", .crlf => "\n\r" };
+            const indentation: []const u8 = if (options.newline_indentation) |nli| switch (nli) {
+                .tabs => |tabs|  &([_]u8{ '\t' } ** (tabs + 1)),
+                .spaces => |spaces| &([_]u8{ ' ' } ** (spaces + 1)),
+            } else "";
+            const after_field: []const u8 = if (indentation.len != 0) eol else " ";
+
+            if (indentation.len != 0) try writer.writeAll(indentation[1..]);
+
+            if (comptime options.prefix) |prefix| switch (prefix) {
+                .entity_id => try writer.print("{}", .{ entity }),
+                .period => try writer.writeByte('.'),
+            };
+
+            try writer.writeByte('{');
+
+            if (enums.values(ComponentName).len == 0 or is_empty: {
+                comptime var component_flags: ComponentFlags = .{};
+                inline for (component_names) |name| @field(component_flags, @tagName(name)) = true;
+                break :is_empty !self.hasAny(entity, component_flags);
+            }) return try writer.writeByte('}');
+
+            if (options.newline_indentation != null) try writer.writeAll(eol);
+
+            inline for (component_names) |name| {
+                if (self.get(entity, name)) |val| {
+                    try writer.print(indentation ++ ".{s} = {any}," ++ after_field, .{ @tagName(name), val });
+                } else if (options.null_components) {
+                    try writer.print(indentation ++ ".{s} = null," ++ after_field, .{ @tagName(name) });
+                }
+            }
+
+            try writer.writeAll(indentation[1..] ++ "}");
+        }
+
+        /// Swaps the indexes, and subsequently the values
+        /// in each component row referred to by each index,
         /// of the given entities. This has no outwardly visible effect,
         /// except that it invalidates any pointers to the components of
         /// the given entities.
@@ -160,7 +241,7 @@ pub fn BasicRegistry(comptime S: type) type {
             assert(self.entityIsValid(a));
             assert(self.entityIsValid(b));
 
-            const indexes = self.getSliceOfIndexes();
+            const indexes = self.getSliceOfIndices();
             mem.swap(usize, &indexes[@enumToInt(a)], &indexes[@enumToInt(b)]);
 
             const index_a = indexes[@enumToInt(a)];
@@ -174,16 +255,16 @@ pub fn BasicRegistry(comptime S: type) type {
             }
         }
 
-        fn getEntityComponentsIndex(self: Self, entity: Entity) usize {
+        inline fn getEntityComponentsIndex(self: Self, entity: Entity) usize {
             assert(self.entityIsValid(entity));
-            return self.getSliceOfIndexes()[@enumToInt(entity)];
+            return self.getSliceOfIndices()[@enumToInt(entity)];
         }
 
-        fn entityIsAlive(self: Self, entity: Entity) bool {
+        inline fn entityIsAlive(self: Self, entity: Entity) bool {
             return self.entityIsValid(entity) and @enumToInt(entity) >= self._graveyard;
         }
 
-        fn entityIsValid(self: Self, entity: Entity) bool {
+        inline fn entityIsValid(self: Self, entity: Entity) bool {
             return @enumToInt(entity) < self._store.len;
         }
 
@@ -197,7 +278,7 @@ pub fn BasicRegistry(comptime S: type) type {
             return self._store.items(field_name);
         }
 
-        fn getSliceOfIndexes(self: Self) []usize {
+        fn getSliceOfIndices(self: Self) []usize {
             return self._store.items(.index);
         }
 
@@ -252,6 +333,9 @@ fn BasicRegistryMetaUtil(comptime S: type) type {
             }));
         };
 
+        /// Returns an instance of `EntityDataStruct` with its index field
+        /// set to the specified value, all flag fields set to false,
+        /// and all value fields set to undefined.
         fn makeDefaultEntityDataStruct(index: usize) EntityDataStruct {
             var result: EntityDataStruct = undefined;
             result.index = index;
@@ -279,6 +363,8 @@ fn BasicRegistryMetaUtil(comptime S: type) type {
         const ComponentName = meta.FieldEnum(S);
         const FieldName = meta.FieldEnum(EntityDataStruct);
 
+        const ComponentFlags = enums.EnumFieldStruct(ComponentName, bool, false);
+
         fn ComponentType(comptime name: ComponentName) type {
             return meta.fieldInfo(S, name).field_type;
         }
@@ -290,6 +376,8 @@ fn BasicRegistryMetaUtil(comptime S: type) type {
             const name_str = generated_field_type.prefix() ++ @tagName(component_name);
             return @field(FieldName, name_str);
         }
+
+        
     };
 }
 
@@ -314,8 +402,8 @@ test "BasicRegistry" {
     try testing.expect(!reg.has(ent1, .position));
     try testing.expect(!reg.has(ent1, .velocity));
 
-    reg.assign(ent0, .position).* = .{ .x = 0.2, .y = 0.3 };
-    reg.assign(ent1, .velocity).* = .{ .x = 122.0, .y = 10.4 };
+    reg.assign(ent0, .position).* = Reg.Struct.Position{ .x = 0.2, .y = 0.3 };
+    reg.assign(ent1, .velocity).* = Reg.Struct.Velocity{ .x = 122.0, .y = 10.4 };
 
     try testing.expect(reg.has(ent0, .position));
     try testing.expectEqual(reg.get(ent0, .position).?.x, 0.2);
@@ -324,4 +412,14 @@ test "BasicRegistry" {
     try testing.expect(reg.has(ent1, .velocity));
     try testing.expectEqual(reg.get(ent1, .velocity).?.x, 122.0);
     try testing.expectEqual(reg.get(ent1, .velocity).?.y, 10.4);
+
+    const stdout = std.io.getStdOut().writer();
+
+    try stdout.writeByte('\n');
+
+    try reg.writeEntity(ent0, stdout, .{ .null_components = false, .prefix = .entity_id, .newline_indentation = .{ .tabs = 0 } });
+    try stdout.writeByte('\n');
+
+    try reg.writeEntity(ent1, stdout, .{ .null_components = false, .prefix = .entity_id, .newline_indentation = .{ .tabs = 0 } });
+    try stdout.writeByte('\n');
 }
