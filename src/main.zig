@@ -93,6 +93,18 @@ pub fn BasicRegistry(comptime S: type) type {
             }
         }
 
+        pub fn ensureTotalCapacity(self: *Self, allocator: Allocator, capacity: usize) Allocator.Error!void {
+            var store_as_multi_array_list = self._store.toMultiArrayList();
+            defer self._store = store_as_multi_array_list.toOwnedSlice();
+            try store_as_multi_array_list.ensureTotalCapacity(allocator, capacity);
+        }
+
+        pub fn ensureUnusedCapacity(self: *Self, allocator: Allocator, capacity: usize) Allocator.Error!void {
+            var store_as_multi_array_list = self._store.toMultiArrayList();
+            defer self._store = store_as_multi_array_list.toOwnedSlice();
+            try store_as_multi_array_list.ensureUnusedCapacity(allocator, capacity - math.clamp(self._graveyard, 0, capacity));
+        }
+
         pub fn get(self: Self, entity: Entity, comptime component: ComponentName) ?ComponentType(component) {
             assert(self.entityIsAlive(entity));
             const index = self.getEntityComponentsIndex(entity);
@@ -137,18 +149,6 @@ pub fn BasicRegistry(comptime S: type) type {
             return val;
         }
 
-        pub fn ensureTotalCapacity(self: *Self, allocator: Allocator, capacity: usize) Allocator.Error!void {
-            var store_as_multi_array_list = self._store.toMultiArrayList();
-            defer self._store = store_as_multi_array_list.toOwnedSlice();
-            try store_as_multi_array_list.ensureTotalCapacity(allocator, capacity);
-        }
-
-        pub fn ensureUnusedCapacity(self: *Self, allocator: Allocator, capacity: usize) Allocator.Error!void {
-            var store_as_multi_array_list = self._store.toMultiArrayList();
-            defer self._store = store_as_multi_array_list.toOwnedSlice();
-            try store_as_multi_array_list.ensureUnusedCapacity(allocator, capacity - math.clamp(self._graveyard, 0, capacity));
-        }
-
         /// Swaps the indexes, and subsequently the values in each component row,
         /// of the given entities. This has no outwardly visible effect,
         /// except that it invalidates any pointers to the components of
@@ -175,7 +175,16 @@ pub fn BasicRegistry(comptime S: type) type {
         }
 
         fn getEntityComponentsIndex(self: Self, entity: Entity) usize {
+            assert(self.entityIsValid(entity));
             return self.getSliceOfIndexes()[@enumToInt(entity)];
+        }
+
+        fn entityIsAlive(self: Self, entity: Entity) bool {
+            return self.entityIsValid(entity) and @enumToInt(entity) >= self._graveyard;
+        }
+
+        fn entityIsValid(self: Self, entity: Entity) bool {
+            return @enumToInt(entity) < self._store.len;
         }
 
         fn getSliceOfComponentValues(self: Self, comptime component: ComponentName) []ComponentType(component) {
@@ -190,14 +199,6 @@ pub fn BasicRegistry(comptime S: type) type {
 
         fn getSliceOfIndexes(self: Self) []usize {
             return self._store.items(.index);
-        }
-
-        fn entityIsAlive(self: Self, entity: Entity) bool {
-            return self.entityIsValid(entity) and @enumToInt(entity) >= self._graveyard;
-        }
-
-        fn entityIsValid(self: Self, entity: Entity) bool {
-            return @enumToInt(entity) < self._store.len;
         }
 
         const ComponentType = meta_info.ComponentType;
