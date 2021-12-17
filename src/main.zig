@@ -29,10 +29,10 @@ pub fn BasicRegistry(comptime S: type) type {
             _,
         };
 
-        pub fn initCapacity(allocator: Allocator, capacity: usize) !Self {
+        pub fn initCapacity(allocator: Allocator, num: usize) !Self {
             var result = Self{};
             errdefer result.deinit(allocator);
-            try result.ensureTotalCapacity(allocator, capacity);
+            try result.ensureTotalCapacity(allocator, num);
             return result;
         }
 
@@ -90,19 +90,22 @@ pub fn BasicRegistry(comptime S: type) type {
                 assert(self.entityIsAlive(ent));
                 self.swapEntityPositions(ent, @intToEnum(Entity, self._graveyard));
                 self._graveyard += 1;
+                inline for (comptime enums.values(ComponentName)) |name| {
+                    if (self.has(ent, name)) _ = self.remove(ent, name);
+                }
             }
         }
 
-        pub fn ensureTotalCapacity(self: *Self, allocator: Allocator, capacity: usize) Allocator.Error!void {
+        pub fn ensureTotalCapacity(self: *Self, allocator: Allocator, num: usize) Allocator.Error!void {
             var store_as_multi_array_list = self._store.toMultiArrayList();
             defer self._store = store_as_multi_array_list.toOwnedSlice();
-            try store_as_multi_array_list.ensureTotalCapacity(allocator, capacity);
+            try store_as_multi_array_list.ensureTotalCapacity(allocator, num);
         }
 
-        pub fn ensureUnusedCapacity(self: *Self, allocator: Allocator, capacity: usize) Allocator.Error!void {
+        pub fn ensureUnusedCapacity(self: *Self, allocator: Allocator, num: usize) Allocator.Error!void {
             var store_as_multi_array_list = self._store.toMultiArrayList();
             defer self._store = store_as_multi_array_list.toOwnedSlice();
-            try store_as_multi_array_list.ensureUnusedCapacity(allocator, capacity - math.clamp(self._graveyard, 0, capacity));
+            try store_as_multi_array_list.ensureUnusedCapacity(allocator, math.max(num, self.unusedCapacity()));
         }
 
         pub fn get(self: Self, entity: Entity, comptime component: ComponentName) ?ComponentType(component) {
@@ -169,23 +172,54 @@ pub fn BasicRegistry(comptime S: type) type {
             const flags = self.getSliceOfComponentFlags(component);
             
             assert(flags[index]);
-            const val = self.get().?;
+            const ptr = self.getPtr(entity, component).?;
+            const val = ptr.*;
+            ptr.* = undefined;
             flags[index] = false;
 
             return val;
         }
 
+        pub fn entityCount(self: Self) usize {
+            return self._store.len - self._graveyard;
+        }
+
+        pub fn capacity(self: Self) usize {
+            return self._store.capacity;
+        }
+
+        pub fn unusedCapacity(self: Self) usize {
+            return (self.capacity() - self.entityCount()) + self._graveyard;
+        }
+
         pub const WriteEntityOptions = struct {
+            /// If non-null, prints a period or the value of the entity id before
+            /// the structure brackets.
             prefix: ?Prefix = .period,
+            /// If true, components not possessed by the entity
+            /// will be written with a value equal to null.
             null_components: bool = false,
-            /// if non-null, newlines are inserted between each field,
-            /// and before and after the first and last fields, respectively.
+            /// If non-null, newlines are inserted between each field,
+            /// and before and after the first and last fields, respectively,
+            /// alongside indentation based on specified depth, and in the case
+            /// of spaces, number of spaces per indent.
             newline_indentation: ?NewlineIndentation = null,
-            /// Used for indentation
+            /// Used for newline-based indentation
             eol: Eol = .lf,
+            /// For each component, if the specified will be used as the
+            /// format specifier for the value of the component.
+            component_formats: ComponentFormats = .{},
+
             pub const Prefix = enum { entity_id, period };
-            pub const NewlineIndentation = union(enum) { tabs: u4, spaces: u4 };
+            pub const NewlineIndentation = union(enum) {
+                tabs: u4,
+                spaces: struct {
+                    depth: u4,
+                    count: u4 = 4,
+                },
+            };
             pub const Eol = enum { lf, crlf };
+            pub const ComponentFormats = enums.EnumFieldStruct(ComponentName, []const u8, "any");
         };
         pub fn writeEntity(
             self: Self,
@@ -195,13 +229,16 @@ pub fn BasicRegistry(comptime S: type) type {
         ) @TypeOf(writer).Error!void {
             const component_names = comptime enums.values(ComponentName);
             const eol: []const u8 = comptime switch (options.eol) { .lf => "\n", .crlf => "\n\r" };
+            const indentation_char_stride = if (options.newline_indentation) |nli| switch (nli) {
+                .tabs => 1,
+                .spaces => |spaces| spaces.count,
+            };
             const indentation: []const u8 = if (options.newline_indentation) |nli| switch (nli) {
                 .tabs => |tabs|  &([_]u8{ '\t' } ** (tabs + 1)),
-                .spaces => |spaces| &([_]u8{ ' ' } ** (spaces + 1)),
+                .spaces => |spaces| &(([_]u8{ ' ' } ** spaces.count) ** (spaces.depth + 1)),
             } else "";
-            const after_field: []const u8 = if (indentation.len != 0) eol else " ";
 
-            if (indentation.len != 0) try writer.writeAll(indentation[1..]);
+            if (indentation.len != 0) try writer.writeAll(indentation[indentation_char_stride..]);
 
             if (comptime options.prefix) |prefix| switch (prefix) {
                 .entity_id => try writer.print("{}", .{ entity }),
@@ -219,36 +256,83 @@ pub fn BasicRegistry(comptime S: type) type {
             if (options.newline_indentation != null) try writer.writeAll(eol);
 
             inline for (component_names) |name| {
+                const after_field: []const u8 = if (indentation.len != 0) eol else "";
+                const space_or_indentation = if (indentation.len == 0) " " else indentation;
+                const format_spec = @field(options.component_formats, @tagName(name));
                 if (self.get(entity, name)) |val| {
-                    try writer.print(indentation ++ ".{s} = {any}," ++ after_field, .{ @tagName(name), val });
+                    try writer.print(space_or_indentation ++ ".{s} = {" ++ format_spec ++ "}," ++ after_field, .{ @tagName(name), val });
                 } else if (options.null_components) {
-                    try writer.print(indentation ++ ".{s} = null," ++ after_field, .{ @tagName(name) });
+                    try writer.print(space_or_indentation ++ ".{s} = null," ++ after_field, .{ @tagName(name) });
                 }
             }
 
-            try writer.writeAll(indentation[1..] ++ "}");
+            if (indentation.len != 0) {
+                try writer.writeAll(indentation[indentation_char_stride..] ++ "}");
+            } else {
+                try writer.writeAll(" }");
+            }
         }
 
-        pub const IterationType = enum { require_one, require_all };
-        pub fn iterateLinearConst(
-            self: Self,
-            comptime E: ?type,
-            comptime iteration_type: IterationType,
-            comptime components: ComponentFlags,
-            context: anytype,
-            comptime function: fn (Self, Entity, @TypeOf(context)) (if (E) |Err| (Err!bool) else bool),
-        ) (if (E) |Err| (Err!void) else void) {
-            var entity = @intToEnum(Entity, self._graveyard);
-            const sentinel_entity = @intToEnum(Entity, self._store.len);
-            outer: while (entity != sentinel_entity) : (entity = @intToEnum(Entity, @enumToInt(entity) + 1)) {
-                switch (iteration_type) {
-                    .require_one => if (!self.hasAny(entity, components)) continue :outer,
-                    .require_all => if (!self.hasAll(entity, components)) continue :outer,
-                }
+        pub const EntityViewSortType = union(enum) {
+            require_one: ComponentName,
+            require_any: ComponentFlags,
+            require_all: ComponentFlags,
+        };
 
-                const should_continue: bool = if (E != null) try function(self, entity, context) else function(self, entity, context);
-                if (!should_continue) return;
+        /// Sorts entities for the desired components, and
+        /// overwrites the provided array list with said entities.
+        /// Returns the slice of the array list of 
+        pub fn entityViewArrayList(
+            self: Self,
+            array_list: *std.ArrayList(Entity),
+            comptime entity_view_sort_type: EntityViewSortType,
+        ) ![]const Entity {
+            array_list.resize(0) catch unreachable;
+            try array_list.ensureTotalCapacity(self._store.len);
+
+            const indices: []const usize = self.getSliceOfIndices();
+
+            switch (entity_view_sort_type) {
+                .require_one => |info| {
+                    const flags: []const bool = self.getSliceOfComponentFlags(info);
+                    var entity = self.firstEntity();
+                    while (entity != self.sentinelEntity()) : (entity = @intToEnum(Entity, @enumToInt(entity) + 1)) {
+                        const index = indices[@enumToInt(entity)];
+                        if (flags[index]) array_list.appendAssumeCapacity(entity);
+                    }
+                },
+                .require_any => |info| {
+                    var entity = self.firstEntity();
+                    while (entity != self.sentinelEntity()) : (entity = @intToEnum(Entity, @enumToInt(entity) + 1)) {
+                        if (self.hasAny(entity, info)) array_list.appendAssumeCapacity(entity);
+                    }
+                },
+                .require_all => |info| {
+                    var entity = self.firstEntity();
+                    while (entity != self.sentinelEntity()) : (entity = @intToEnum(Entity, @enumToInt(entity) + 1)) {
+                        if (self.hasAll(entity, info)) array_list.appendAssumeCapacity(entity);
+                    }
+                },
             }
+
+            return array_list.items[0..];
+        }
+
+        /// Returns id of first entity not in the graveyard section.
+        fn firstEntity(self: Self) Entity {
+            return @intToEnum(Entity, self._graveyard);
+        }
+
+        /// Returns id of last living entity.
+        fn lastEntity(self: Self) Entity {
+            return @intToEnum(Entity, self._store.len - 1);
+        }
+
+        /// Returns sentinel entity id, which is not associated
+        /// with an actual entity, but can be used to indicate
+        /// the end of an iteration internally.
+        fn sentinelEntity(self: Self) Entity {
+            return @intToEnum(Entity, @enumToInt(self.lastEntity()) + 1);
         }
 
         /// Swaps the indexes, and subsequently the values
@@ -283,11 +367,11 @@ pub fn BasicRegistry(comptime S: type) type {
         }
 
         inline fn entityIsAlive(self: Self, entity: Entity) bool {
-            return self.entityIsValid(entity) and @enumToInt(entity) >= self._graveyard;
+            return self.entityIsValid(entity) and @enumToInt(entity) >= @enumToInt(self.firstEntity());
         }
 
         inline fn entityIsValid(self: Self, entity: Entity) bool {
-            return @enumToInt(entity) < self._store.len;
+            return @enumToInt(entity) < @enumToInt(self.sentinelEntity());
         }
 
         fn getSliceOfComponentValues(self: Self, comptime component: ComponentName) []ComponentType(component) {
@@ -435,16 +519,18 @@ test "BasicRegistry" {
     try testing.expectEqual(reg.get(ent1, .velocity).?.x, 122.0);
     try testing.expectEqual(reg.get(ent1, .velocity).?.y, 10.4);
 
-    try std.io.getStdOut().writer().writeByte('\n');
-    try reg.iterateLinearConst(
-        std.fs.File.Writer.Error,
-        .require_one,
-        .{ .position = true, .velocity = true },
-        std.io.getStdOut().writer(),
-        struct { fn iterateFn(r: Reg, e: Reg.Entity, stdout: std.fs.File.Writer) std.fs.File.Writer.Error!bool {
-            try r.writeEntity(e, stdout, .{ .null_components = false, .prefix = .entity_id, .newline_indentation = .{ .tabs = 0 } });
-            try stdout.writeByte('\n');
-            return true;
-        } }.iterateFn
-    );
+    var entity_cache = try std.ArrayList(Reg.Entity).initCapacity(testing.allocator, reg.entityCount());
+    defer entity_cache.deinit();
+
+    const stdout = std.io.getStdOut().writer();
+    try stdout.writeByte('\n');
+
+    const view = try reg.entityViewArrayList(&entity_cache, .{ .require_any = .{ .position = true } });
+    for (view[0..]) |ent| {
+        try reg.writeEntity(ent, stdout, .{
+            .prefix = .entity_id,
+            .newline_indentation = .{ .spaces = .{ .depth = 0 } },
+        });
+        try stdout.writeByte('\n');
+    }
 }
