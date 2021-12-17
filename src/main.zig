@@ -11,6 +11,11 @@ const assert = debug.assert;
 const Allocator = mem.Allocator;
 const TypeInfo = builtin.TypeInfo;
 
+/// Basic Entity Registry, which stores entities an entity's component values/flags in a single allocation, in a table
+/// where component values/flags are stored sequentially in columns, next to a column of indexes which point to
+/// an arbitrary row in the component columns. The index column is indexed by entity ids, which then indicates which
+/// row is associated with an entity id, allowing for arbitrary ordering of data, whilst ensuring that an entity id
+/// is never invalidated, up until it is destroyed.
 pub fn BasicRegistry(comptime S: type) type {
     if (@typeInfo(S) != .Struct) @compileError("Expected a Struct type.");
     return struct {
