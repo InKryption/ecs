@@ -21,14 +21,14 @@ pub fn BasicRegistry(comptime S: type) type {
     return struct {
         const Self = @This();
         _graveyard: usize = 0,
-        _store: meta_info.DataStore.Slice = .{
+        _store: meta_util.DataStore.Slice = .{
             .ptrs = undefined,
             .len = 0,
             .capacity = 0,
         },
 
         pub const Struct = S;
-        pub const ComponentName = meta_info.ComponentName;
+        pub const ComponentName = meta_util.ComponentName;
         pub const Entity = enum(usize) {
             const Tag = meta.Tag(@This());
             _,
@@ -86,7 +86,7 @@ pub fn BasicRegistry(comptime S: type) type {
             for (remaining_uninitialized) |*ent| {
                 const entity_int_value = self._store.len;
                 ent.* = @intToEnum(Entity, entity_int_value);
-                store_as_multi_array_list.appendAssumeCapacity(meta_info.makeDefaultEntityDataStruct(entity_int_value));
+                store_as_multi_array_list.appendAssumeCapacity(meta_util.makeDefaultEntityDataStruct(entity_int_value));
             }
         }
 
@@ -133,7 +133,7 @@ pub fn BasicRegistry(comptime S: type) type {
             return self.getSliceOfComponentFlags(component)[index];
         }
 
-        pub const ComponentFlags = meta_info.ComponentFlags;
+        pub const ComponentFlags = meta_util.ComponentFlags;
 
         pub fn hasAny(self: Self, entity: Entity, comptime components: ComponentFlags) bool {
             assert(self.entityIsAlive(entity));
@@ -380,12 +380,12 @@ pub fn BasicRegistry(comptime S: type) type {
         }
 
         fn getSliceOfComponentValues(self: Self, comptime component: ComponentName) []ComponentType(component) {
-            const field_name = comptime meta_info.componentNameToFieldName(.value, component);
+            const field_name = comptime meta_util.componentNameToFieldName(.value, component);
             return self._store.items(field_name);
         }
 
         fn getSliceOfComponentFlags(self: Self, comptime component: ComponentName) []bool {
-            const field_name = comptime meta_info.componentNameToFieldName(.flag, component);
+            const field_name = comptime meta_util.componentNameToFieldName(.flag, component);
             return self._store.items(field_name);
         }
 
@@ -393,8 +393,8 @@ pub fn BasicRegistry(comptime S: type) type {
             return self._store.items(.index);
         }
 
-        const ComponentType = meta_info.ComponentType;
-        const meta_info = BasicRegistryMetaUtil(S);
+        const ComponentType = meta_util.ComponentType;
+        const meta_util = BasicRegistryMetaUtil(S);
     };
 }
 
